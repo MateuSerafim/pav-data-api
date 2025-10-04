@@ -1,12 +1,15 @@
-from fastapi.responses import JSONResponse
+from fastapi.responses import Response, JSONResponse
 from core.src.utils.result import Result
 from datetime import datetime, timezone
 
-def return_response(result: Result, class_to_convert = None):
+def set_response(result: Result, class_to_convert = None):
     if result.is_failure():
         return JSONResponse(status_code=result.error_code.value, 
                             content={"error": result.error, 
                                      "response_data":str(datetime.now(tz=timezone.utc))})
+    if (type(result.value) == bool):
+        return Response(status_code=204)
+    
     if (class_to_convert == None):
         return JSONResponse(
             content={"result": dict(result.value), 
