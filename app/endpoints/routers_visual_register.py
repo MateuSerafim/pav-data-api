@@ -13,6 +13,8 @@ from app.utils.file_extensions import get_file_extensions
 from core.src.utils.result import Result
 from app.contracts.pavements.visual_register import VisualRegisterResponse
 
+from app.qeue_control import send_to_queue
+
 router = APIRouter(prefix="", tags=["Visual Register"])
 
 @router.post("/visual-surveys/{visual_survey_id}/visual-registers")
@@ -48,5 +50,7 @@ async def create_visual_register(visual_survey_id: uuid.UUID, file: UploadFile =
     
     if (add_result.is_failure()):
         return set_response(add_result)
+    
+    send_to_queue("survey-images", str(file_name))
     
     return set_response(add_result, VisualRegisterResponse)

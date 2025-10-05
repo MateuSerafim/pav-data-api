@@ -7,4 +7,4 @@ RUN pip install -r requirements.txt
 
 COPY . .
 
-CMD ["python main_server.py"]
+CMD ["python3", "main_server.py"]
