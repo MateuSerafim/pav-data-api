@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends, UploadFile, File
 import uuid
+import io
+from fastapi.responses import StreamingResponse
 
 from app.dependences import visual_register_service, \
   visual_survey_service, \
@@ -54,3 +56,24 @@ async def create_visual_register(visual_survey_id: uuid.UUID, file: UploadFile =
     send_to_queue("survey-images", str(file_name))
     
     return set_response(add_result, VisualRegisterResponse)
+
+@router.get("/visual-registers/{visual_register_id}/images")
+async def get_visual_register_image(visual_register_id: uuid.UUID, 
+    storage_service: AzureStorageService = Depends(file_storage_service),
+    visual_register_service: VisualRegisterService= Depends(visual_register_service)):
+
+    maybe_register: Result = await visual_register_service.get_visual_register(visual_register_id)
+    if (maybe_register.is_failure()):
+        set_response(maybe_register)
+    
+    image_stream = await storage_service.get_file("images-survey", maybe_register.value.image_url)
+    if (image_stream.is_failure()):
+        set_response(image_stream)
+    try:
+        data = await image_stream.value.readall()
+        return StreamingResponse(io.BytesIO(data), 
+                                 media_type="application/octet-stream", 
+                                 headers={"Content-Disposition": \
+                                          f"attachment; filename={maybe_register.value.image_url}"})
+    except Exception as ex:
+        return set_response(Result.failure(ex))
