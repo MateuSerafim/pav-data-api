@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends, UploadFile, File
 import uuid
 import io
+import cv2
 from fastapi.responses import StreamingResponse
+from core.src.images_module.pav_reader import ImageReader
 
 from app.dependences import visual_register_service, \
   visual_survey_service, \
@@ -13,13 +15,23 @@ from core.src.files_module.image_storage_service import AzureStorageService
 from app.utils.result_extensions import set_response
 from app.utils.file_extensions import get_file_extensions
 from core.src.utils.result import Result
-from app.contracts.pavements.visual_register import VisualRegisterResponse
+from app.contracts.pavements.visual_register import VisualRegisterResponse, VisualRegisterResponseDetailed
 
 from app.qeue_control import send_to_queue
 
 router = APIRouter(prefix="", tags=["Visual Register"])
 
-@router.post("/visual-surveys/{visual_survey_id}/visual-registers")
+CREATE_VISUAL_REGISTER_SUMMARY = "Adiciona um registro visual em um levantamento."
+CREATE_VISUAL_REGISTER_DESCRIPTION = '''
+
+Adiciona um registro visual. Os formatos suportados são:
+- JPG
+- JPEG
+- PNG
+'''
+@router.post("/visual-surveys/{visual_survey_id}/visual-registers", 
+             summary=CREATE_VISUAL_REGISTER_SUMMARY, 
+             description=CREATE_VISUAL_REGISTER_DESCRIPTION)
 async def create_visual_register(visual_survey_id: uuid.UUID, file: UploadFile = File(...),
                                 visual_register_service: VisualRegisterService\
                                   = Depends(visual_register_service), 
@@ -57,21 +69,79 @@ async def create_visual_register(visual_survey_id: uuid.UUID, file: UploadFile =
     
     return set_response(add_result, VisualRegisterResponse)
 
-@router.get("/visual-registers/{visual_register_id}/images")
+GET_VISUAL_REGISTERS = "Retorna uma lista de registros em um levantamento."
+@router.get("/visual-surveys/{visual_survey_id}/visual-registers", summary=GET_VISUAL_REGISTERS)
+async def get_visual_register(visual_survey_id: uuid.UUID, 
+    visual_register_service: VisualRegisterService= Depends(visual_register_service)):
+    
+    maybe_register: Result = await visual_register_service.get_visual_registers(visual_survey_id)
+
+    return set_response(maybe_register, VisualRegisterResponse)
+
+GET_VISUAL_REGISTER_IMAGE = "Retorna um registro enviado."
+@router.get("/visual-registers/{visual_register_id}", 
+            summary=GET_VISUAL_REGISTER_IMAGE)
+async def get_visual_register(visual_register_id: uuid.UUID, 
+    visual_register_service: VisualRegisterService= Depends(visual_register_service)):
+
+    maybe_register: Result = await visual_register_service.get_visual_register(visual_register_id)
+    if (maybe_register.is_failure()):
+        return set_response(maybe_register)
+    
+    return set_response(maybe_register, VisualRegisterResponseDetailed)
+    
+
+GET_VISUAL_REGISTER_IMAGE_SUMMARY = "Retorna a imagem de um registro enviado."
+@router.get("/visual-registers/{visual_register_id}/images", 
+            summary=GET_VISUAL_REGISTER_IMAGE_SUMMARY)
 async def get_visual_register_image(visual_register_id: uuid.UUID, 
     storage_service: AzureStorageService = Depends(file_storage_service),
     visual_register_service: VisualRegisterService= Depends(visual_register_service)):
 
     maybe_register: Result = await visual_register_service.get_visual_register(visual_register_id)
     if (maybe_register.is_failure()):
-        set_response(maybe_register)
+        return set_response(maybe_register)
     
     image_stream = await storage_service.get_file("images-survey", maybe_register.value.image_url)
     if (image_stream.is_failure()):
-        set_response(image_stream)
+        return set_response(image_stream)
     try:
         data = await image_stream.value.readall()
         return StreamingResponse(io.BytesIO(data), 
+                                 media_type="application/octet-stream", 
+                                 headers={"Content-Disposition": \
+                                          f"attachment; filename={maybe_register.value.image_url}"})
+    except Exception as ex:
+        return set_response(Result.failure(ex))
+
+GET_VISUAL_REGISTER_IMAGE_PROCESSED_SUMMARY = "Retorna a imagem processada."
+@router.get("/visual-registers/{visual_register_id}/images-processeds", 
+            summary=GET_VISUAL_REGISTER_IMAGE_PROCESSED_SUMMARY)
+async def get_visual_register_image_processed(visual_register_id: uuid.UUID, 
+    storage_service: AzureStorageService = Depends(file_storage_service),
+    visual_register_service: VisualRegisterService= Depends(visual_register_service)):
+
+    maybe_register: Result = await visual_register_service.get_visual_register(visual_register_id)
+    if (maybe_register.is_failure()):
+        return set_response(maybe_register)
+    
+    if (maybe_register.value.process_status != 1):
+        return set_response(Result.failure("Imagem ainda não processada!"))
+    
+    image_stream = await storage_service.get_file("images-survey", maybe_register.value.image_url)
+    if (image_stream.is_failure()):
+        return set_response(image_stream)
+    try:
+        image_data = await image_stream.value.readall()
+        img: Result = ImageReader.read_from_blob_data(image_data, visual_register_id)
+
+        for o in maybe_register.value.objects:
+            img.value.draw_rectangule(o.position[0][0], o.position[0][1], 
+                                      o.position[1][0], o.position[1][1], o.get_color())
+        
+        _, buffer = cv2.imencode(f".{get_file_extensions(maybe_register.value.image_url)}", img.value.image_data)
+        
+        return StreamingResponse(io.BytesIO(buffer), 
                                  media_type="application/octet-stream", 
                                  headers={"Content-Disposition": \
                                           f"attachment; filename={maybe_register.value.image_url}"})
